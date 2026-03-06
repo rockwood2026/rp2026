@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { MapPin, Plus, Trash2, Calendar, X, Share2, Download, Check, ChevronUp, ChevronDown, FileUp, FileDown } from 'lucide-react';
+import { MapPin, Plus, Trash2, Calendar, X, Share2, Download, Check, ChevronUp, ChevronDown, FileUp, FileDown, Eraser } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, onValue, push, set, remove, update } from 'firebase/database';
 import * as htmlToImage from 'html-to-image';
@@ -78,7 +78,7 @@ function App() {
         if (!stop.lat || !stop.lng) return;
         const icon = window.L.divIcon({
           className: '',
-          html: `<div style="background-color:${stop.color}; width:28px; height:28px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); border:2px solid white; display:flex; align-items:center; justify-content:center; shadow: 0 4px 6px rgba(0,0,0,0.2);">
+          html: `<div style="background-color:${stop.color}; width:28px; height:28px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); border:2px solid white; display:flex; align-items:center; justify-content:center; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
                     <span style="transform:rotate(45deg); color:white; font-weight:bold; font-size:11px;">${index + 1}</span>
                  </div>`,
           iconSize: [28, 28], iconAnchor: [14, 28]
@@ -137,9 +137,15 @@ function App() {
       }
     });
     return () => animationIds.forEach(id => cancelAnimationFrame(id));
-  }, [groupedStops]);
+  }, [groupedStops, stops]);
 
-  // --- EXCEL IMPORT/EXPORT LOGIC ---
+  const handleClearAll = async () => {
+    if (window.confirm("⚠️ 确定要清空所有站点吗？此操作无法撤销。")) {
+      await remove(ref(db, 'stops'));
+      alert("所有数据已清空。");
+    }
+  };
+
   const exportToExcel = () => {
     const data = stops.map(s => ({
       'Stop Name': s.name,
@@ -163,13 +169,19 @@ function App() {
       const ws = wb.Sheets[wsname];
       const data = XLSX.utils.sheet_to_json(ws);
       
+      let addedCount = 0;
+      let skippedCount = 0;
+
       for (const row of data) {
         const name = row['Stop Name'];
         const phase = row['Phase Number']?.toString();
         const start = row['Start Date'];
         const end = row['End Date'];
         
-        if (name && phase) {
+        // --- DUPLICATE CHECK ---
+        const isDuplicate = stops.some(s => s.name === name && s.startDate === start);
+
+        if (name && phase && !isDuplicate) {
           const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${name}`);
           const geoData = await resp.json();
           if (geoData[0]) {
@@ -177,28 +189,41 @@ function App() {
             const existingPhase = stops.find(s => s.phase === phase);
             const color = existingPhase ? existingPhase.color : '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
             await set(push(ref(db, 'stops')), { 
-              name, phase, color, startDate: start, endDate: end, ...coords, order: stops.length 
+              name, phase, color, startDate: start, endDate: end, ...coords, order: stops.length + addedCount 
             });
+            addedCount++;
           }
+        } else if (isDuplicate) {
+          skippedCount++;
         }
       }
-      alert("导入完成！");
+      alert(`导入完成！新增: ${addedCount}，跳过重复: ${skippedCount}`);
     };
     reader.readAsBinaryString(file);
+    e.target.value = null;
   };
 
-  const moveStop = async (index, direction) => {
-    const newStops = [...stops];
-    const target = index + direction;
-    if (target < 0 || target >= newStops.length) return;
-    const currentStop = newStops[index];
-    const neighborStop = newStops[target];
-    if (direction === 1 && new Date(currentStop.startDate) < new Date(neighborStop.startDate)) return alert("无法下移：违反日期顺序");
-    if (direction === -1 && new Date(currentStop.startDate) > new Date(neighborStop.startDate)) return alert("无法上移：违反日期顺序");
-    [newStops[index], newStops[target]] = [newStops[target], newStops[index]];
-    const updates = {};
-    newStops.forEach((s, i) => { updates[`stops/${s.id}/order`] = i; });
-    await update(ref(db), updates);
+  const handleSave = async () => {
+    if (!newStop.name || !newStop.phase) return;
+
+    // --- DUPLICATE CHECK FOR MANUAL ENTRY ---
+    const isDuplicate = stops.some(s => s.id !== editingId && s.name === newStop.name && s.startDate === newStop.startDate);
+    if (isDuplicate) return alert(`城市 ${newStop.name} 在 ${newStop.startDate} 已经存在！`);
+
+    const dateTaken = stops.some(s => s.id !== editingId && s.startDate === newStop.startDate);
+    if (dateTaken) return alert(`日期 ${newStop.startDate} 已被占用！`);
+    
+    const colorConflict = stops.some(s => s.phase !== newStop.phase && s.color === newStop.color);
+    if (colorConflict) return alert("该颜色已被其他阶段使用！");
+
+    const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${newStop.name}`);
+    const data = await resp.json();
+    if (data[0]) {
+      const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+      const targetRef = editingId ? ref(db, `stops/${editingId}`) : push(ref(db, 'stops'));
+      await set(targetRef, { ...newStop, ...coords, order: editingId ? newStop.order : stops.length });
+      setIsEditing(false); setEditingId(null); setNewStop(initialStopState);
+    }
   };
 
   return (
@@ -213,6 +238,9 @@ function App() {
           <h1 className="text-lg font-bold tracking-tight">巡展规划助手</h1>
         </div>
         <div className="flex items-center gap-2">
+            <button onClick={handleClearAll} className="p-2.5 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-all flex items-center gap-2 font-bold text-xs mr-2">
+                <Eraser size={16} /><span>清空全部</span>
+            </button>
             <button onClick={() => fileInputRef.current.click()} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all flex items-center gap-2 font-bold text-xs">
                 <FileUp size={16} /><span>导入Excel</span>
                 <input type="file" ref={fileInputRef} hidden onChange={importFromExcel} accept=".xlsx, .xls, .csv" />
@@ -227,7 +255,7 @@ function App() {
             }} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all flex items-center gap-2 font-bold text-xs">
                 <Download size={16} /><span>导出图片</span>
             </button>
-            <button onClick={() => {setIsEditing(true); setEditingId(null); setNewStop(initialStopState);}} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-slate-800 shadow-lg ml-2">
+            <button onClick={() => {setIsEditing(true); setEditingId(null); setNewStop(initialStopState);}} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-slate-800 shadow-lg ml-2 transition-all">
                 <Plus size={18} /><span>新增站点</span>
             </button>
         </div>
@@ -235,7 +263,7 @@ function App() {
       <main className="flex flex-1 overflow-hidden p-6 gap-6">
         <div className="w-[380px] bg-white rounded-[32px] shadow-xl border border-slate-100 flex flex-col overflow-hidden">
           {isEditing ? (
-            <div className="p-8 flex flex-col h-full bg-white">
+            <div className="p-8 flex flex-col h-full bg-white animate-in slide-in-from-right-4 duration-200">
                <div className="flex justify-between items-center mb-8">
                  <h2 className="text-xl font-bold">{editingId ? '编辑' : '新增'}</h2>
                  <button onClick={() => setIsEditing(false)} className="p-1 hover:bg-slate-100 rounded-full"><X size={20} /></button>
@@ -254,19 +282,16 @@ function App() {
                  </div>
                  <input type="date" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.startDate} onChange={e => setNewStop({...newStop, startDate: e.target.value, endDate: e.target.value})} />
                </div>
-               <button onClick={async () => {
-                 const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${newStop.name}`);
-                 const data = await resp.json();
-                 if (data[0]) {
-                   const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
-                   const targetRef = editingId ? ref(db, `stops/${editingId}`) : push(ref(db, 'stops'));
-                   await set(targetRef, { ...newStop, ...coords, order: editingId ? newStop.order : stops.length });
-                   setIsEditing(false); setNewStop(initialStopState);
-                 }
-               }} className="mt-auto w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg">保存</button>
+               <button onClick={handleSave} className="mt-auto w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg">保存</button>
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto p-5 space-y-6">
+              {Object.entries(groupedStops).length === 0 && (
+                <div className="h-full flex flex-col items-center justify-center text-slate-300 gap-4 mt-20">
+                  <MapPin size={48} strokeWidth={1} />
+                  <p className="font-bold text-sm text-slate-400">点击右上角或导入 Excel 开始规划</p>
+                </div>
+              )}
               {Object.entries(groupedStops).map(([phase, data]) => (
                 <div key={phase} className="space-y-3">
                   <div className="flex justify-between items-center px-2">
@@ -277,12 +302,30 @@ function App() {
                       <div key={stop.id} className="p-4 bg-white rounded-xl border border-slate-100 flex items-center justify-between group hover:border-blue-100 transition-all shadow-sm">
                         <div className="flex items-center gap-3 cursor-pointer flex-1" onClick={() => {setNewStop(stop); setEditingId(stop.id); setIsEditing(true);}}>
                           <div className="w-2 h-2 rounded-full" style={{ backgroundColor: stop.color }} />
-                          <div><p className="font-bold text-slate-700 text-sm">{stop.name}</p><p className="text-[9px] text-slate-400 font-bold">{stop.startDate}</p></div>
+                          <div><p className="font-bold text-slate-700 text-sm">{stop.name}</p><p className="text-[9px] text-slate-400 font-bold uppercase">{stop.startDate}</p></div>
                         </div>
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100">
-                            <button onClick={() => moveStop(stops.indexOf(stop), -1)} className="p-1 hover:bg-slate-100 rounded text-slate-400"><ChevronUp size={14} /></button>
-                            <button onClick={() => moveStop(stops.indexOf(stop), 1)} className="p-1 hover:bg-slate-100 rounded text-slate-400"><ChevronDown size={14} /></button>
-                            <button onClick={() => remove(ref(db, `stops/${stop.id}`))} className="p-1.5 hover:bg-red-50 text-red-400 rounded"><Trash2 size={14} /></button>
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                            <button onClick={() => {
+                                const index = stops.indexOf(stop);
+                                if (index > 0 && new Date(stops[index-1].startDate) <= new Date(stop.startDate)) {
+                                    const newStops = [...stops];
+                                    [newStops[index], newStops[index-1]] = [newStops[index-1], newStops[index]];
+                                    const updates = {};
+                                    newStops.forEach((s, i) => { updates[`stops/${s.id}/order`] = i; });
+                                    update(ref(db), updates);
+                                } else if (index > 0) alert("无法上移：违反日期顺序");
+                            }} className="p-1 hover:bg-slate-100 rounded text-slate-400"><ChevronUp size={14} /></button>
+                            <button onClick={() => {
+                                const index = stops.indexOf(stop);
+                                if (index < stops.length - 1 && new Date(stops[index+1].startDate) >= new Date(stop.startDate)) {
+                                    const newStops = [...stops];
+                                    [newStops[index], newStops[index+1]] = [newStops[index+1], newStops[index]];
+                                    const updates = {};
+                                    newStops.forEach((s, i) => { updates[`stops/${s.id}/order`] = i; });
+                                    update(ref(db), updates);
+                                } else if (index < stops.length -1) alert("无法下移：违反日期顺序");
+                            }} className="p-1 hover:bg-slate-100 rounded text-slate-400"><ChevronDown size={14} /></button>
+                            <button onClick={() => remove(ref(db, `stops/${stop.id}`))} className="p-1.5 hover:bg-red-50 text-red-400 rounded transition-colors"><Trash2 size={14} /></button>
                         </div>
                       </div>
                     ))}
