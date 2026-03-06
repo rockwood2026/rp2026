@@ -66,7 +66,7 @@ function App() {
     });
   }, []);
 
-  // --- 3. Constant Speed Animation Logic ---
+  // --- 3. Animation Logic with Symmetrical Alignment ---
   useEffect(() => {
     if (!mapRef.current) return;
     layersRef.current.markers.forEach(m => m.remove());
@@ -78,7 +78,6 @@ function App() {
     Object.values(groupedStops).forEach((group) => {
       const pathCoords = group.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
       
-      // Draw Pins
       group.stops.forEach((stop, index) => {
         if (!stop.lat || !stop.lng) return;
         const icon = window.L.divIcon({
@@ -93,16 +92,15 @@ function App() {
       });
 
       if (pathCoords.length > 1) {
-        // Marching Ants
         const polyline = window.L.polyline(pathCoords, { color: group.color, weight: 3, dashArray: '8, 12', className: 'marching-ants' }).addTo(mapRef.current);
         layersRef.current.paths.push(polyline);
 
-        // Arrow Icon (Tapered tip corrected rotation)
+        // SVG Path redesigned to point STRAIGHT UP (North) for easier symmetry math
         const arrowIcon = window.L.divIcon({
           className: '',
-          html: `<div class="arrow-container" style="color:${group.color}; filter: drop-shadow(0 0 2px white); opacity: 0; transition: opacity 0.3s;">
-                  <svg width="24" height="24" viewBox="0 0 24 24" style="transform: translate(-50%, -50%) rotate(-90deg)">
-                    <path d="M2 21L23 12L2 3V10L17 12L2 14V21Z" fill="currentColor"/>
+          html: `<div class="arrow-container" style="color:${group.color}; filter: drop-shadow(0 0 2px white); opacity: 0; transition: opacity 0.3s; pointer-events: none;">
+                  <svg width="24" height="24" viewBox="0 0 24 24" style="position: absolute; top: 50%; left: 50%; margin: -12px 0 0 -12px;">
+                    <path d="M12 2L21 21L12 17L3 21L12 2Z" fill="currentColor"/>
                   </svg>
                  </div>`,
           iconSize: [24, 24]
@@ -111,7 +109,6 @@ function App() {
         const arrowMarker = window.L.marker(pathCoords[0], { icon: arrowIcon }).addTo(mapRef.current);
         layersRef.current.arrows.push(arrowMarker);
 
-        // --- CONSTANT SPEED MATH ---
         let totalDistance = 0;
         const segments = [];
         for (let i = 0; i < pathCoords.length - 1; i++) {
@@ -121,23 +118,22 @@ function App() {
         }
 
         let traveled = 0;
-        const speed = totalDistance / 600; // Adjust divisor to change speed (higher = slower)
+        const speed = totalDistance / 800; // Speed control
 
         const animate = () => {
           traveled = (traveled + speed) % totalDistance;
-          
-          // Find which segment we are currently in
           const seg = segments.find((s, idx) => traveled >= s.cumulative && (idx === segments.length - 1 || traveled < segments[idx + 1].cumulative));
 
           if (seg) {
-            const segTraveled = traveled - seg.cumulative;
-            const percent = segTraveled / seg.dist;
-            
+            const percent = (traveled - seg.cumulative) / seg.dist;
             const lat = seg.start[0] + (seg.end[0] - seg.start[0]) * percent;
             const lng = seg.start[1] + (seg.end[1] - seg.start[1]) * percent;
-            const angle = Math.atan2(seg.end[0] - seg.start[0], seg.end[1] - seg.start[1]) * (180 / Math.PI);
             
-            // Fading logic based on total progress
+            // MATH: Calculate angle for symmetry against the path
+            const point1 = mapRef.current.latLngToContainerPoint(seg.start);
+            const point2 = mapRef.current.latLngToContainerPoint(seg.end);
+            const angle = Math.atan2(point2.y - point1.y, point2.x - point1.x) * (180 / Math.PI) + 90;
+
             const totalPercent = traveled / totalDistance;
             let opacity = 1;
             if (totalPercent < 0.05) opacity = totalPercent / 0.05;
@@ -149,7 +145,7 @@ function App() {
                 const container = el.querySelector('.arrow-container');
                 const svg = el.querySelector('svg');
                 if (container) container.style.opacity = opacity;
-                if (svg) svg.style.transform = `translate(-50%, -50%) rotate(${90 - angle}deg)`;
+                if (svg) svg.style.transform = `rotate(${angle}deg)`;
             }
           }
           animationIds.push(requestAnimationFrame(animate));
@@ -160,7 +156,7 @@ function App() {
     return () => animationIds.forEach(id => cancelAnimationFrame(id));
   }, [groupedStops]);
 
-  // --- 4. Actions ---
+  // --- 4. Shared & Export ---
   const handleShare = () => {
     navigator.clipboard.writeText(window.location.href);
     setShareStatus(true);
@@ -171,7 +167,7 @@ function App() {
     if (exportRef.current) {
         const dataUrl = await htmlToImage.toPng(exportRef.current, { backgroundColor: '#f8fafc' });
         const link = document.createElement('a');
-        link.download = 'tour-plan.png';
+        link.download = 'route-map.png';
         link.href = dataUrl;
         link.click();
     }
@@ -233,14 +229,14 @@ function App() {
                  <button onClick={() => setIsEditing(false)} className="p-1 hover:bg-slate-100 rounded-full"><X size={20} /></button>
                </div>
                <div className="space-y-5">
-                 <input className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" placeholder="城市名称" value={newStop.name} onChange={e => setNewStop({...newStop, name: e.target.value})} />
+                 <input className="w-full p-4 bg-slate-50 rounded-xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all" placeholder="城市" value={newStop.name} onChange={e => setNewStop({...newStop, name: e.target.value})} />
                  <div className="grid grid-cols-2 gap-4">
                     <input type="number" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" placeholder="Phase" value={newStop.phase} onChange={e => setNewStop({...newStop, phase: e.target.value})} />
                     <input type="color" className="w-full h-14 p-1 bg-slate-50 rounded-xl cursor-pointer" value={newStop.color} onChange={e => setNewStop({...newStop, color: e.target.value})} />
                  </div>
                  <input type="date" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.startDate} onChange={e => setNewStop({...newStop, startDate: e.target.value, endDate: e.target.value})} />
                </div>
-               <button onClick={handleSave} className="mt-auto w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-100 transition-all">保存</button>
+               <button onClick={handleSave} className="mt-auto w-full py-4 bg-blue-600 text-white rounded-xl font-bold">保存</button>
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto p-5 space-y-6">
