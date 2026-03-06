@@ -37,7 +37,6 @@ function App() {
   const exportRef = useRef(null);
   const layersRef = useRef({ markers: [], paths: [], arrows: [] });
 
-  // --- 1. Chronology & Grouping ---
   const groupedStops = useMemo(() => {
     const groups = {};
     const sorted = [...stops].sort((a, b) => a.order - b.order);
@@ -50,7 +49,6 @@ function App() {
     return groups;
   }, [stops]);
 
-  // --- 2. Map Initialization ---
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
     mapRef.current = window.L.map(mapContainerRef.current, { 
@@ -66,7 +64,6 @@ function App() {
     });
   }, []);
 
-  // --- 3. Animation Logic with Symmetrical Alignment ---
   useEffect(() => {
     if (!mapRef.current) return;
     layersRef.current.markers.forEach(m => m.remove());
@@ -95,12 +92,11 @@ function App() {
         const polyline = window.L.polyline(pathCoords, { color: group.color, weight: 3, dashArray: '8, 12', className: 'marching-ants' }).addTo(mapRef.current);
         layersRef.current.paths.push(polyline);
 
-        // SVG Path redesigned to point STRAIGHT UP (North) for easier symmetry math
         const arrowIcon = window.L.divIcon({
           className: '',
           html: `<div class="arrow-container" style="color:${group.color}; filter: drop-shadow(0 0 2px white); opacity: 0; transition: opacity 0.3s; pointer-events: none;">
                   <svg width="24" height="24" viewBox="0 0 24 24" style="position: absolute; top: 50%; left: 50%; margin: -12px 0 0 -12px;">
-                    <path d="M12 2L21 21L12 17L3 21L12 2Z" fill="currentColor"/>
+                    <path d="M12 2L22 22L12 18L2 22L12 2Z" fill="currentColor"/>
                   </svg>
                  </div>`,
           iconSize: [24, 24]
@@ -118,7 +114,7 @@ function App() {
         }
 
         let traveled = 0;
-        const speed = totalDistance / 800; // Speed control
+        const speed = totalDistance / 800;
 
         const animate = () => {
           traveled = (traveled + speed) % totalDistance;
@@ -129,10 +125,9 @@ function App() {
             const lat = seg.start[0] + (seg.end[0] - seg.start[0]) * percent;
             const lng = seg.start[1] + (seg.end[1] - seg.start[1]) * percent;
             
-            // MATH: Calculate angle for symmetry against the path
-            const point1 = mapRef.current.latLngToContainerPoint(seg.start);
-            const point2 = mapRef.current.latLngToContainerPoint(seg.end);
-            const angle = Math.atan2(point2.y - point1.y, point2.x - point1.x) * (180 / Math.PI) + 90;
+            const p1 = mapRef.current.latLngToContainerPoint(seg.start);
+            const p2 = mapRef.current.latLngToContainerPoint(seg.end);
+            const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI) + 90;
 
             const totalPercent = traveled / totalDistance;
             let opacity = 1;
@@ -156,7 +151,24 @@ function App() {
     return () => animationIds.forEach(id => cancelAnimationFrame(id));
   }, [groupedStops]);
 
-  // --- 4. Shared & Export ---
+  // --- SMART UI LOGIC ---
+  const handlePhaseChange = (val) => {
+    // Ensure only positive integers
+    const phaseNum = val.replace(/[^0-9]/g, '');
+    if (phaseNum === '' || parseInt(phaseNum) < 1) {
+        setNewStop({ ...newStop, phase: '' });
+        return;
+    }
+
+    // Auto-update color if phase already exists
+    const existingPhase = Object.values(groupedStops).find(g => g.stops[0].phase === phaseNum);
+    setNewStop({ 
+        ...newStop, 
+        phase: phaseNum, 
+        color: existingPhase ? existingPhase.color : newStop.color 
+    });
+  };
+
   const handleShare = () => {
     navigator.clipboard.writeText(window.location.href);
     setShareStatus(true);
@@ -167,18 +179,20 @@ function App() {
     if (exportRef.current) {
         const dataUrl = await htmlToImage.toPng(exportRef.current, { backgroundColor: '#f8fafc' });
         const link = document.createElement('a');
-        link.download = 'route-map.png';
+        link.download = 'route-plan.png';
         link.href = dataUrl;
         link.click();
     }
   };
 
   const handleSave = async () => {
-    if (!newStop.name) return;
+    if (!newStop.name || !newStop.phase) return;
     const dateTaken = stops.some(s => s.id !== editingId && s.startDate === newStop.startDate);
     if (dateTaken) return alert(`日期 ${newStop.startDate} 已被占用！`);
-    const colorUsed = stops.some(s => s.phase !== newStop.phase && s.color === newStop.color);
-    if (colorUsed) return alert("该颜色已被其他阶段使用！");
+    
+    // Check for color conflicts with DIFFERENT phases
+    const colorConflict = stops.some(s => s.phase !== newStop.phase && s.color === newStop.color);
+    if (colorConflict) return alert("该颜色已被其他阶段使用！");
 
     const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${newStop.name}`);
     const data = await resp.json();
@@ -231,8 +245,14 @@ function App() {
                <div className="space-y-5">
                  <input className="w-full p-4 bg-slate-50 rounded-xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all" placeholder="城市" value={newStop.name} onChange={e => setNewStop({...newStop, name: e.target.value})} />
                  <div className="grid grid-cols-2 gap-4">
-                    <input type="number" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" placeholder="Phase" value={newStop.phase} onChange={e => setNewStop({...newStop, phase: e.target.value})} />
-                    <input type="color" className="w-full h-14 p-1 bg-slate-50 rounded-xl cursor-pointer" value={newStop.color} onChange={e => setNewStop({...newStop, color: e.target.value})} />
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 mb-1 block uppercase">阶段 (Positive Integer)</label>
+                        <input type="text" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.phase} onChange={e => handlePhaseChange(e.target.value)} />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 mb-1 block uppercase">主题色</label>
+                        <input type="color" className="w-full h-14 p-1 bg-slate-50 rounded-xl cursor-pointer" value={newStop.color} onChange={e => setNewStop({...newStop, color: e.target.value})} />
+                    </div>
                  </div>
                  <input type="date" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.startDate} onChange={e => setNewStop({...newStop, startDate: e.target.value, endDate: e.target.value})} />
                </div>
