@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { MapPin, Plus, Trash2, Calendar, ChevronDown, Clock, X, Edit2 } from 'lucide-react';
+import { MapPin, Plus, Trash2, Calendar, X, Share2, Download, Check } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, onValue, push, set, remove, update } from 'firebase/database';
+import * as htmlToImage from 'html-to-image';
 
 // --- FIREBASE CONFIG ---
 const firebaseConfig = {
@@ -22,6 +23,7 @@ function App() {
   const [stops, setStops] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [shareStatus, setShareStatus] = useState(false);
   
   const initialStopState = {
     name: '', phase: '1', color: '#3b82f6', lat: null, lng: null,
@@ -32,6 +34,7 @@ function App() {
   const [newStop, setNewStop] = useState(initialStopState);
   const mapRef = useRef(null);
   const mapContainerRef = useRef(null);
+  const exportRef = useRef(null);
   const layersRef = useRef({ markers: [], paths: [], arrows: [] });
 
   // --- 1. Chronology & Grouping ---
@@ -51,7 +54,7 @@ function App() {
   // --- 2. Map Setup ---
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
-    mapRef.current = window.L.map(mapContainerRef.current, { zoomControl: false }).setView([34.3416, 108.9398], 4);
+    mapRef.current = window.L.map(mapContainerRef.current, { zoomControl: false, attributionControl: false }).setView([34.3416, 108.9398], 4);
     window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(mapRef.current);
     
     onValue(ref(db, 'stops'), (snapshot) => {
@@ -61,20 +64,17 @@ function App() {
     });
   }, []);
 
-  // --- 3. Animation & Drawing ---
+  // --- 3. Animation Logic ---
   useEffect(() => {
     if (!mapRef.current) return;
-    
     layersRef.current.markers.forEach(m => m.remove());
     layersRef.current.paths.forEach(p => p.remove());
     layersRef.current.arrows.forEach(a => a.remove());
     layersRef.current = { markers: [], paths: [], arrows: [] };
-
     const animationIds = [];
 
     Object.values(groupedStops).forEach((group) => {
       const pathCoords = group.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
-      
       group.stops.forEach((stop, index) => {
         if (!stop.lat || !stop.lng) return;
         const icon = window.L.divIcon({
@@ -91,37 +91,39 @@ function App() {
       if (pathCoords.length > 1) {
         const polyline = window.L.polyline(pathCoords, { color: group.color, weight: 3, dashArray: '8, 12', className: 'marching-ants' }).addTo(mapRef.current);
         layersRef.current.paths.push(polyline);
-
         const arrowIcon = window.L.divIcon({
           className: '',
-          html: `<div style="color:${group.color}; filter: drop-shadow(0 0 2px white);">
+          html: `<div class="arrow-container" style="color:${group.color}; filter: drop-shadow(0 0 2px white); opacity: 0;">
                   <svg width="24" height="24" viewBox="0 0 24 24" style="transform: translate(-50%, -50%)">
                     <path d="M2 21L23 12L2 3V10L17 12L2 14V21Z" fill="currentColor"/>
                   </svg>
                  </div>`,
           iconSize: [24, 24]
         });
-
         const arrowMarker = window.L.marker(pathCoords[0], { icon: arrowIcon }).addTo(mapRef.current);
         layersRef.current.arrows.push(arrowMarker);
 
         let progress = 0;
         const animate = () => {
-          progress = (progress + 0.0015) % 1; 
+          progress = (progress + 0.002) % 1;
           const totalSegments = pathCoords.length - 1;
           const segmentIndex = Math.floor(progress * totalSegments);
           const segmentProgress = (progress * totalSegments) % 1;
           const p1 = pathCoords[segmentIndex];
           const p2 = pathCoords[segmentIndex + 1];
-
           if (p1 && p2) {
             const lat = p1[0] + (p2[0] - p1[0]) * segmentProgress;
             const lng = p1[1] + (p2[1] - p1[1]) * segmentProgress;
             const angle = Math.atan2(p2[0] - p1[0], p2[1] - p1[1]) * (180 / Math.PI);
+            let opacity = 1;
+            if (progress < 0.1) opacity = progress / 0.1;
+            if (progress > 0.9) opacity = (1 - progress) / 0.1;
             arrowMarker.setLatLng([lat, lng]);
             const el = arrowMarker.getElement();
             if (el) {
+                const container = el.querySelector('.arrow-container');
                 const svg = el.querySelector('svg');
+                if (container) container.style.opacity = opacity;
                 if (svg) svg.style.transform = `translate(-50%, -50%) rotate(${90 - angle}deg)`;
             }
           }
@@ -130,31 +132,35 @@ function App() {
         animate();
       }
     });
-
     return () => animationIds.forEach(id => cancelAnimationFrame(id));
   }, [groupedStops]);
 
-  // --- 4. Actions ---
+  // --- 4. Shared & Export Features ---
+  const handleShare = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setShareStatus(true);
+    setTimeout(() => setShareStatus(false), 2000);
+  };
+
+  const handleExport = async () => {
+    if (exportRef.current) {
+        const dataUrl = await htmlToImage.toPng(exportRef.current);
+        const link = document.createElement('a');
+        link.download = 'my-route-plan.png';
+        link.href = dataUrl;
+        link.click();
+    }
+  };
+
   const handleSave = async () => {
     if (!newStop.name) return;
-
-    // RULE 1: ONE EVENT PER DAY
     const dateTaken = stops.some(s => s.id !== editingId && s.startDate === newStop.startDate);
     if (dateTaken) return alert(`日期 ${newStop.startDate} 已被占用！`);
-
-    // RULE 2: UNIQUE COLOR PER PHASE
-    // Check if any other phase is already using this color
-    const colorUsedByOtherPhase = stops.some(s => 
-        s.phase !== newStop.phase && 
-        s.color.toLowerCase() === newStop.color.toLowerCase()
-    );
-    if (colorUsedByOtherPhase) {
-        return alert(`颜色 ${newStop.color} 已经被其他阶段使用了！每个阶段请使用唯一的颜色。`);
-    }
+    const colorUsed = stops.some(s => s.phase !== newStop.phase && s.color === newStop.color);
+    if (colorUsed) return alert("该颜色已被其他阶段使用！");
 
     const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${newStop.name}`);
     const data = await resp.json();
-    
     if (data[0]) {
       const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
       const targetRef = editingId ? ref(db, `stops/${editingId}`) : push(ref(db, 'stops'));
@@ -168,7 +174,7 @@ function App() {
   const deleteStop = (id) => { if(window.confirm("确定删除？")) remove(ref(db, `stops/${id}`)); };
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50 font-sans text-slate-900 overflow-hidden">
+    <div ref={exportRef} className="flex flex-col h-screen bg-slate-50 font-sans text-slate-900 overflow-hidden">
       <style>{`
         @keyframes dash { to { stroke-dashoffset: -20; } }
         .marching-ants { animation: dash 1s linear infinite; }
@@ -177,11 +183,22 @@ function App() {
       <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-slate-100 z-10">
         <div className="flex items-center gap-4">
           <div className="bg-blue-600 p-2 rounded-xl text-white shadow-md"><MapPin size={20} /></div>
-          <h1 className="text-lg font-bold">巡展路线规划助手</h1>
+          <h1 className="text-lg font-bold tracking-tight">巡展路线规划助手</h1>
         </div>
-        <button onClick={() => {setIsEditing(true); setEditingId(null); setNewStop(initialStopState);}} className="px-5 py-2 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-slate-800 transition-all">
-          <Plus size={18} /><span>新增站点</span>
-        </button>
+        
+        <div className="flex items-center gap-3">
+            <button onClick={handleShare} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all flex items-center gap-2 font-bold text-sm">
+                {shareStatus ? <Check size={18} className="text-green-600"/> : <Share2 size={18} />}
+                <span>{shareStatus ? '已复制链接' : '分享'}</span>
+            </button>
+            <button onClick={handleExport} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all flex items-center gap-2 font-bold text-sm">
+                <Download size={18} />
+                <span>导出图片</span>
+            </button>
+            <button onClick={() => {setIsEditing(true); setEditingId(null); setNewStop(initialStopState);}} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg">
+                <Plus size={18} /><span>新增站点</span>
+            </button>
+        </div>
       </header>
 
       <main className="flex flex-1 overflow-hidden p-6 gap-6">
@@ -193,26 +210,14 @@ function App() {
                  <button onClick={() => setIsEditing(false)} className="p-1 hover:bg-slate-100 rounded-full"><X size={20} /></button>
                </div>
                <div className="space-y-5">
-                 <div>
-                    <label className="text-[10px] font-black text-slate-400 mb-1 block uppercase">城市</label>
-                    <input className="w-full p-4 bg-slate-50 rounded-xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all" placeholder="输入城市名称" value={newStop.name} onChange={e => setNewStop({...newStop, name: e.target.value})} />
-                 </div>
+                 <input className="w-full p-4 bg-slate-50 rounded-xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all" placeholder="城市名称" value={newStop.name} onChange={e => setNewStop({...newStop, name: e.target.value})} />
                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                        <label className="text-[10px] font-black text-slate-400 mb-1 block uppercase">阶段 (Phase)</label>
-                        <input type="number" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.phase} onChange={e => setNewStop({...newStop, phase: e.target.value})} />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-black text-slate-400 mb-1 block uppercase">阶段颜色</label>
-                        <input type="color" className="w-full h-14 p-1 bg-slate-50 rounded-xl cursor-pointer" value={newStop.color} onChange={e => setNewStop({...newStop, color: e.target.value})} />
-                    </div>
+                    <input type="number" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" placeholder="Phase" value={newStop.phase} onChange={e => setNewStop({...newStop, phase: e.target.value})} />
+                    <input type="color" className="w-full h-14 p-1 bg-slate-50 rounded-xl cursor-pointer" value={newStop.color} onChange={e => setNewStop({...newStop, color: e.target.value})} />
                  </div>
-                 <div>
-                    <label className="text-[10px] font-black text-slate-400 mb-1 block uppercase">出发日期</label>
-                    <input type="date" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.startDate} onChange={e => setNewStop({...newStop, startDate: e.target.value, endDate: e.target.value})} />
-                 </div>
+                 <input type="date" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.startDate} onChange={e => setNewStop({...newStop, startDate: e.target.value, endDate: e.target.value})} />
                </div>
-               <button onClick={handleSave} className="mt-auto w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-100 hover:bg-blue-700 transition-all">保存站点信息</button>
+               <button onClick={handleSave} className="mt-auto w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-100 hover:bg-blue-700 transition-all">保存站点</button>
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto p-5 space-y-6">
@@ -232,20 +237,12 @@ function App() {
                             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-tighter">{stop.startDate}</p>
                           </div>
                         </div>
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                          <button onClick={() => deleteStop(stop.id)} className="p-1.5 hover:bg-red-50 text-red-400 rounded transition-colors"><Trash2 size={14} /></button>
-                        </div>
+                        <button onClick={() => deleteStop(stop.id)} className="p-1.5 opacity-0 group-hover:opacity-100 hover:bg-red-50 text-red-400 rounded transition-all"><Trash2 size={14} /></button>
                       </div>
                     ))}
                   </div>
                 </div>
               ))}
-              {stops.length === 0 && (
-                <div className="flex flex-col items-center justify-center h-64 text-slate-300 space-y-2">
-                    <MapPin size={48} strokeWidth={1} />
-                    <p className="text-sm font-medium">尚未添加任何站点</p>
-                </div>
-              )}
             </div>
           )}
         </div>
