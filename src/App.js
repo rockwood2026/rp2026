@@ -179,7 +179,7 @@ export default function App() {
         })
       }).addTo(map);
 
-      const label = `µÚ${phase?.phaseNumber || '?'}½×¶Î ¡¤ ${stop.city}`;
+      const label = `ç¬¬${phase?.phaseNumber || '?'}é˜¶æ®µ Â· ${stop.city}`;
       marker.bindTooltip(label, { permanent: true, direction: 'right', offset: [10, 0], className: 'map-label', style: { borderLeft: `4px solid ${color}` } });
       marker.on('click', () => setActiveStopId(stop.id));
       markersRef.current.push(marker);
@@ -224,7 +224,7 @@ export default function App() {
     if (isEditing) {
       const color = phaseFormData.color || '#334155';
       previewMarkerRef.current = L.marker(editFormData.coords, { draggable: true, icon: L.divIcon({
-        html: `<div style="background: ${color}; width: 32px; height: 32px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 3px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center;"><div style="transform: rotate(45deg); color: white;">”9İ9</div></div>`,
+        html: `<div style="background: ${color}; width: 32px; height: 32px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 3px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center;"><div style="transform: rotate(45deg); color: white;">ğŸ“</div></div>`,
         iconSize: [32, 32], iconAnchor: [16, 32]
       })}).addTo(map);
       previewMarkerRef.current.on('dragend', (e) => setEditFormData(p => ({ ...p, coords: [e.target.getLatLng().lat, e.target.getLatLng().lng] })));
@@ -306,17 +306,17 @@ export default function App() {
         <div className="flex items-center gap-4">
           <div className="p-2.5 bg-slate-900 rounded-2xl text-white shadow-lg"><Globe size={24} /></div>
           <div>
-            <h1 className="text-xl font-black tracking-tight text-slate-800">Ñ²Õ¹Â·Ïß¹æ»®ÖúÊÖ</h1>
-            <div className="flex items-center gap-2 mt-0.5 text-emerald-600 font-bold text-[10px]"><Cloud size={10}/> ÔÆ¶ËÍ¬²½</div>
+            <h1 className="text-xl font-black tracking-tight text-slate-800">å·¡å±•è·¯çº¿è§„åˆ’åŠ©æ‰‹</h1>
+            <div className="flex items-center gap-2 mt-0.5 text-emerald-600 font-bold text-[10px]"><Cloud size={10}/> äº‘ç«¯åŒæ­¥</div>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={handleShare} className="px-5 py-2 bg-white border rounded-xl text-xs font-bold">·ÖÏí</button>
+          <button onClick={handleShare} className="px-5 py-2 bg-white border rounded-xl text-xs font-bold">åˆ†äº«</button>
           {!isEditing && <button onClick={() => { 
             const d = new Date().toISOString().split('T')[0]; 
             setEditFormData({ id: crypto.randomUUID(), city: '', venue: '', startDate: d, endDate: d, coords: [30, 110], desc: '', phaseId: '' });
             setIsEditing(true); 
-          }} className="px-5 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold">+ ĞÂÔö</button>}
+          }} className="px-5 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold">+ æ–°å¢</button>}
         </div>
       </header>
 
@@ -324,18 +324,18 @@ export default function App() {
         <aside className="w-[380px] bg-white border-r overflow-y-auto p-6 space-y-4">
            {isEditing ? (
              <div className="space-y-4">
-                <input type="text" className="w-full border p-3 rounded-xl" placeholder="³ÇÊĞ" value={editFormData.city} onChange={e => setEditFormData({...editFormData, city: e.target.value})} />
-                <button onClick={saveStop} className="w-full bg-slate-900 text-white p-3 rounded-xl">±£´æÕ¾µã</button>
-                <button onClick={() => setIsEditing(false)} className="w-full text-slate-400">È¡Ïû</button>
+                <input type="text" className="w-full border p-3 rounded-xl" placeholder="åŸå¸‚" value={editFormData.city} onChange={e => setEditFormData({...editFormData, city: e.target.value})} />
+                <button onClick={saveStop} className="w-full bg-slate-900 text-white p-3 rounded-xl">ä¿å­˜ç«™ç‚¹</button>
+                <button onClick={() => setIsEditing(false)} className="w-full text-slate-400">å–æ¶ˆ</button>
              </div>
            ) : (
              phases.map(p => (
                <div key={p.id} className="border p-4 rounded-2xl" style={{ borderLeft: `5px solid ${p.color}` }}>
-                  <h3 className="font-bold">µÚ {p.phaseNumber} ½×¶Î</h3>
+                  <h3 className="font-bold">ç¬¬ {p.phaseNumber} é˜¶æ®µ</h3>
                   {sortedStops.filter(s => s.phaseId === p.id).map(s => (
                     <div key={s.id} className="text-xs mt-2 flex justify-between">
                       <span>{s.city}</span>
-                      <button onClick={() => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'stops', s.id))} className="text-red-400">É¾³ı</button>
+                      <button onClick={() => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'stops', s.id))} className="text-red-400">åˆ é™¤</button>
                     </div>
                   ))}
                </div>
