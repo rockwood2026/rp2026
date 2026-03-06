@@ -24,7 +24,7 @@ function App() {
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [shareStatus, setShareStatus] = useState(false);
-  const [phaseMode, setPhaseMode] = useState('select'); // 'select' or 'custom'
+  const [phaseMode, setPhaseMode] = useState('select');
   
   const initialStopState = {
     name: '', phase: '1', color: '#3b82f6', lat: null, lng: null,
@@ -90,10 +90,9 @@ function App() {
         const polyline = window.L.polyline(pathCoords, { color: group.color, weight: 3, dashArray: '8, 12', className: 'marching-ants' }).addTo(mapRef.current);
         layersRef.current.paths.push(polyline);
 
-        // Arrow with Center Anchor for Perfect Axis Alignment
         const arrowIcon = window.L.divIcon({
           className: '',
-          html: `<div class="arrow-container" style="color:${group.color}; filter: drop-shadow(0 0 2px white); opacity: 0; transition: opacity 0.3s; pointer-events: none; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;">
+          html: `<div class="arrow-wrapper" style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; color:${group.color}; filter: drop-shadow(0 0 2px white); opacity: 0; transition: opacity 0.3s;">
                   <svg width="24" height="24" viewBox="0 0 24 24" style="display: block;">
                     <path d="M12 2L22 22L12 18L2 22L12 2Z" fill="currentColor"/>
                   </svg>
@@ -125,7 +124,6 @@ function App() {
             const lat = seg.start[0] + (seg.end[0] - seg.start[0]) * percent;
             const lng = seg.start[1] + (seg.end[1] - seg.start[1]) * percent;
             
-            // Screen-space point calculation for stable rotation
             const p1 = mapRef.current.latLngToContainerPoint(seg.start);
             const p2 = mapRef.current.latLngToContainerPoint(seg.end);
             const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI) + 90;
@@ -138,10 +136,10 @@ function App() {
             arrowMarker.setLatLng([lat, lng]);
             const el = arrowMarker.getElement();
             if (el) {
-                const container = el.querySelector('.arrow-container');
-                if (container) {
-                    container.style.opacity = opacity;
-                    container.style.transform = `rotate(${angle}deg)`;
+                const wrapper = el.querySelector('.arrow-wrapper');
+                if (wrapper) {
+                    wrapper.style.opacity = opacity;
+                    wrapper.style.transform = `rotate(${angle}deg)`;
                 }
             }
           }
@@ -153,18 +151,12 @@ function App() {
     return () => animationIds.forEach(id => cancelAnimationFrame(id));
   }, [groupedStops]);
 
-  // --- SMART PHASE LOGIC ---
-  const handlePhaseSelection = (val) => {
-    if (val === 'custom') {
-      setPhaseMode('custom');
-      setNewStop({ ...newStop, phase: '' });
-      return;
+  const handlePhaseChange = (val) => {
+    const phaseNum = val.replace(/[^0-9]/g, '');
+    if (phaseNum === '' || parseInt(phaseNum) < 1) {
+        setNewStop({ ...newStop, phase: '' });
+        return;
     }
-    setPhaseMode('select');
-    applyPhaseData(val);
-  };
-
-  const applyPhaseData = (phaseNum) => {
     const existingPhase = stops.find(s => s.phase === phaseNum);
     if (existingPhase) {
         setNewStop({ ...newStop, phase: phaseNum, color: existingPhase.color });
@@ -178,38 +170,23 @@ function App() {
     const newStops = [...stops];
     const target = index + direction;
     if (target < 0 || target >= newStops.length) return;
-
     const currentStop = newStops[index];
     const neighborStop = newStops[target];
-
     if (direction === 1 && new Date(currentStop.startDate) < new Date(neighborStop.startDate)) return alert("无法向下移动：日期较早。");
     if (direction === -1 && new Date(currentStop.startDate) > new Date(neighborStop.startDate)) return alert("无法向上移动：日期较晚。");
-
     [newStops[index], newStops[target]] = [newStops[target], newStops[index]];
     const updates = {};
     newStops.forEach((s, i) => { updates[`stops/${s.id}/order`] = i; });
     await update(ref(db), updates);
   };
 
-  const handleEditInitiate = (stop) => {
-    const p = parseInt(stop.phase);
-    setPhaseMode(p >= 1 && p <= 12 && p.toString() === stop.phase ? 'select' : 'custom');
-    setNewStop({ ...stop });
-    setEditingId(stop.id);
-    setIsEditing(true);
-  };
-
-  const handleShare = () => {
-    navigator.clipboard.writeText(window.location.href);
-    setShareStatus(true);
-    setTimeout(() => setShareStatus(false), 2000);
-  };
+  const handleActionDelete = (id) => { if(window.confirm("确定删除？")) remove(ref(db, `stops/${id}`)); };
 
   const handleExport = async () => {
     if (exportRef.current) {
         const dataUrl = await htmlToImage.toPng(exportRef.current, { backgroundColor: '#f8fafc' });
         const link = document.createElement('a');
-        link.download = 'tour-plan.png';
+        link.download = 'route-plan.png';
         link.href = dataUrl;
         link.click();
     }
@@ -219,10 +196,8 @@ function App() {
     if (!newStop.name || !newStop.phase) return;
     const dateTaken = stops.some(s => s.id !== editingId && s.startDate === newStop.startDate);
     if (dateTaken) return alert(`日期 ${newStop.startDate} 已被占用！`);
-    
     const colorConflict = stops.some(s => s.phase !== newStop.phase && s.color === newStop.color);
     if (colorConflict) return alert("该颜色已被其他阶段使用！");
-
     const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${newStop.name}`);
     const data = await resp.json();
     if (data[0]) {
@@ -241,14 +216,13 @@ function App() {
         @keyframes dash { to { stroke-dashoffset: -20; } }
         .marching-ants { animation: dash 1s linear infinite; }
       `}</style>
-
       <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-slate-100 z-10">
         <div className="flex items-center gap-4">
           <div className="bg-blue-600 p-2 rounded-xl text-white shadow-md"><MapPin size={20} /></div>
           <h1 className="text-lg font-bold tracking-tight">巡展路线规划助手</h1>
         </div>
         <div className="flex items-center gap-3">
-            <button onClick={handleShare} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 flex items-center gap-2 font-bold text-sm">
+            <button onClick={() => {navigator.clipboard.writeText(window.location.href); setShareStatus(true); setTimeout(()=>setShareStatus(false), 2000)}} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 flex items-center gap-2 font-bold text-sm">
                 {shareStatus ? <Check size={18} className="text-green-600"/> : <Share2 size={18} />}
                 <span>{shareStatus ? '已复制' : '分享'}</span>
             </button>
@@ -260,7 +234,6 @@ function App() {
             </button>
         </div>
       </header>
-
       <main className="flex flex-1 overflow-hidden p-6 gap-6">
         <div className="w-[380px] bg-white rounded-[32px] shadow-xl border border-slate-100 flex flex-col overflow-hidden">
           {isEditing ? (
@@ -275,13 +248,13 @@ function App() {
                     <div>
                         <label className="text-[10px] font-bold text-slate-400 mb-1 block uppercase">阶段</label>
                         {phaseMode === 'select' ? (
-                            <select className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none appearance-none" value={newStop.phase} onChange={e => handlePhaseSelection(e.target.value)}>
+                            <select className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none appearance-none" value={newStop.phase} onChange={e => {if(e.target.value==='custom'){setPhaseMode('custom'); setNewStop({...newStop, phase:''})} else handlePhaseChange(e.target.value)}}>
                                 {[...Array(12)].map((_, i) => <option key={i+1} value={i+1}>{i+1}</option>)}
                                 <option value="custom">Custom...</option>
                             </select>
                         ) : (
                             <div className="relative">
-                                <input type="text" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" placeholder="Phase #" value={newStop.phase} onChange={e => applyPhaseData(e.target.value.replace(/[^0-9]/g, ''))} />
+                                <input type="text" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" placeholder="Phase #" value={newStop.phase} onChange={e => handlePhaseChange(e.target.value)} />
                                 <button onClick={() => setPhaseMode('select')} className="absolute right-2 top-3 p-1 text-slate-300 hover:text-slate-500"><X size={14}/></button>
                             </div>
                         )}
@@ -305,7 +278,7 @@ function App() {
                   <div className="space-y-2">
                     {data.stops.map((stop, idx) => (
                       <div key={stop.id} className="p-4 bg-white rounded-xl border border-slate-100 flex items-center justify-between group hover:border-blue-100 transition-all shadow-sm">
-                        <div className="flex items-center gap-3 cursor-pointer flex-1" onClick={() => handleEditInitiate(stop)}>
+                        <div className="flex items-center gap-3 cursor-pointer flex-1" onClick={() => {setNewStop(stop); setEditingId(stop.id); setIsEditing(true);}}>
                           <div className="w-2 h-2 rounded-full" style={{ backgroundColor: stop.color }} />
                           <div>
                             <p className="font-bold text-slate-700 text-sm">{stop.name}</p>
@@ -315,7 +288,7 @@ function App() {
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
                             <button onClick={() => moveStop(stops.indexOf(stop), -1)} className="p-1 hover:bg-slate-100 rounded text-slate-400"><ChevronUp size={14} /></button>
                             <button onClick={() => moveStop(stops.indexOf(stop), 1)} className="p-1 hover:bg-slate-100 rounded text-slate-400"><ChevronDown size={14} /></button>
-                            <button onClick={() => deleteStop(stop.id)} className="p-1.5 hover:bg-red-50 text-red-400 rounded"><Trash2 size={14} /></button>
+                            <button onClick={() => handleActionDelete(stop.id)} className="p-1.5 hover:bg-red-50 text-red-400 rounded"><Trash2 size={14} /></button>
                         </div>
                       </div>
                     ))}
