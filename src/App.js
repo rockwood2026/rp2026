@@ -51,10 +51,7 @@ function App() {
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
-    mapRef.current = window.L.map(mapContainerRef.current, { 
-        zoomControl: false, 
-        attributionControl: false 
-    }).setView([34.3416, 108.9398], 4);
+    mapRef.current = window.L.map(mapContainerRef.current, { zoomControl: false, attributionControl: false }).setView([34.3416, 108.9398], 4);
     window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(mapRef.current);
     
     onValue(ref(db, 'stops'), (snapshot) => {
@@ -74,7 +71,6 @@ function App() {
 
     Object.values(groupedStops).forEach((group) => {
       const pathCoords = group.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
-      
       group.stops.forEach((stop, index) => {
         if (!stop.lat || !stop.lng) return;
         const icon = window.L.divIcon({
@@ -124,11 +120,9 @@ function App() {
             const percent = (traveled - seg.cumulative) / seg.dist;
             const lat = seg.start[0] + (seg.end[0] - seg.start[0]) * percent;
             const lng = seg.start[1] + (seg.end[1] - seg.start[1]) * percent;
-            
             const p1 = mapRef.current.latLngToContainerPoint(seg.start);
             const p2 = mapRef.current.latLngToContainerPoint(seg.end);
             const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI) + 90;
-
             const totalPercent = traveled / totalDistance;
             let opacity = 1;
             if (totalPercent < 0.05) opacity = totalPercent / 0.05;
@@ -153,20 +147,43 @@ function App() {
 
   // --- SMART UI LOGIC ---
   const handlePhaseChange = (val) => {
-    // Ensure only positive integers
     const phaseNum = val.replace(/[^0-9]/g, '');
     if (phaseNum === '' || parseInt(phaseNum) < 1) {
         setNewStop({ ...newStop, phase: '' });
         return;
     }
 
-    // Auto-update color if phase already exists
-    const existingPhase = Object.values(groupedStops).find(g => g.stops[0].phase === phaseNum);
-    setNewStop({ 
-        ...newStop, 
-        phase: phaseNum, 
-        color: existingPhase ? existingPhase.color : newStop.color 
-    });
+    const existingPhase = stops.find(s => s.phase === phaseNum);
+    
+    if (existingPhase) {
+        setNewStop({ ...newStop, phase: phaseNum, color: existingPhase.color });
+    } else {
+        // Recommend a new random color for a new phase
+        const randomColor = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+        setNewStop({ ...newStop, phase: phaseNum, color: randomColor });
+    }
+  };
+
+  const moveStop = async (index, direction) => {
+    const newStops = [...stops];
+    const target = index + direction;
+    if (target < 0 || target >= newStops.length) return;
+
+    // RULE: Cannot move stop if it breaks chronological order
+    const currentStop = newStops[index];
+    const neighborStop = newStops[target];
+
+    if (direction === 1 && new Date(currentStop.startDate) < new Date(neighborStop.startDate)) {
+        return alert("无法向下移动：该站点的日期早于下方的站点。");
+    }
+    if (direction === -1 && new Date(currentStop.startDate) > new Date(neighborStop.startDate)) {
+        return alert("无法向上移动：该站点的日期晚于上方的站点。");
+    }
+
+    [newStops[index], newStops[target]] = [newStops[target], newStops[index]];
+    const updates = {};
+    newStops.forEach((s, i) => { updates[`stops/${s.id}/order`] = i; });
+    await update(ref(db), updates);
   };
 
   const handleShare = () => {
@@ -179,7 +196,7 @@ function App() {
     if (exportRef.current) {
         const dataUrl = await htmlToImage.toPng(exportRef.current, { backgroundColor: '#f8fafc' });
         const link = document.createElement('a');
-        link.download = 'route-plan.png';
+        link.download = 'tour-plan.png';
         link.href = dataUrl;
         link.click();
     }
@@ -190,7 +207,6 @@ function App() {
     const dateTaken = stops.some(s => s.id !== editingId && s.startDate === newStop.startDate);
     if (dateTaken) return alert(`日期 ${newStop.startDate} 已被占用！`);
     
-    // Check for color conflicts with DIFFERENT phases
     const colorConflict = stops.some(s => s.phase !== newStop.phase && s.color === newStop.color);
     if (colorConflict) return alert("该颜色已被其他阶段使用！");
 
@@ -275,7 +291,11 @@ function App() {
                             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-tighter">{stop.startDate}</p>
                           </div>
                         </div>
-                        <button onClick={() => deleteStop(stop.id)} className="p-1.5 opacity-0 group-hover:opacity-100 hover:bg-red-50 text-red-400 rounded transition-all"><Trash2 size={14} /></button>
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                            <button onClick={() => moveStop(stops.indexOf(stop), -1)} className="p-1 hover:bg-slate-100 rounded text-slate-400"><X size={14} className="rotate-180" /></button>
+                            <button onClick={() => moveStop(stops.indexOf(stop), 1)} className="p-1 hover:bg-slate-100 rounded text-slate-400"><X size={14} /></button>
+                            <button onClick={() => deleteStop(stop.id)} className="p-1.5 hover:bg-red-50 text-red-400 rounded"><Trash2 size={14} /></button>
+                        </div>
                       </div>
                     ))}
                   </div>
