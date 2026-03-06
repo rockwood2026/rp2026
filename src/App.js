@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { MapPin, Plus, Trash2, Calendar, X, Share2, Download, Check, ChevronUp, ChevronDown } from 'lucide-react';
+import { MapPin, Plus, Trash2, Calendar, X, Share2, Download, Check, ChevronUp, ChevronDown, FileUp, FileDown } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, onValue, push, set, remove, update } from 'firebase/database';
 import * as htmlToImage from 'html-to-image';
+import * as XLSX from 'xlsx';
 
 // --- FIREBASE CONFIG ---
 const firebaseConfig = {
@@ -36,6 +37,7 @@ function App() {
   const mapRef = useRef(null);
   const mapContainerRef = useRef(null);
   const exportRef = useRef(null);
+  const fileInputRef = useRef(null);
   const layersRef = useRef({ markers: [], paths: [], arrows: [] });
 
   const groupedStops = useMemo(() => {
@@ -72,12 +74,11 @@ function App() {
 
     Object.values(groupedStops).forEach((group) => {
       const pathCoords = group.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
-      
       group.stops.forEach((stop, index) => {
         if (!stop.lat || !stop.lng) return;
         const icon = window.L.divIcon({
           className: '',
-          html: `<div style="background-color:${stop.color}; width:28px; height:28px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); border:2px solid white; display:flex; align-items:center; justify-content:center; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
+          html: `<div style="background-color:${stop.color}; width:28px; height:28px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); border:2px solid white; display:flex; align-items:center; justify-content:center; shadow: 0 4px 6px rgba(0,0,0,0.2);">
                     <span style="transform:rotate(45deg); color:white; font-weight:bold; font-size:11px;">${index + 1}</span>
                  </div>`,
           iconSize: [28, 28], iconAnchor: [14, 28]
@@ -89,7 +90,6 @@ function App() {
       if (pathCoords.length > 1) {
         const polyline = window.L.polyline(pathCoords, { color: group.color, weight: 3, dashArray: '8, 12', className: 'marching-ants' }).addTo(mapRef.current);
         layersRef.current.paths.push(polyline);
-
         const arrowIcon = window.L.divIcon({
           className: '',
           html: `<div class="arrow-wrapper" style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; color:${group.color}; filter: drop-shadow(0 0 2px white); opacity: 0; transition: opacity 0.3s;">
@@ -97,13 +97,10 @@ function App() {
                     <path d="M12 2L22 22L12 18L2 22L12 2Z" fill="currentColor"/>
                   </svg>
                  </div>`,
-          iconSize: [24, 24],
-          iconAnchor: [12, 12]
+          iconSize: [24, 24], iconAnchor: [12, 12]
         });
-
         const arrowMarker = window.L.marker(pathCoords[0], { icon: arrowIcon }).addTo(mapRef.current);
         layersRef.current.arrows.push(arrowMarker);
-
         let totalDistance = 0;
         const segments = [];
         for (let i = 0; i < pathCoords.length - 1; i++) {
@@ -111,36 +108,27 @@ function App() {
           segments.push({ start: pathCoords[i], end: pathCoords[i+1], dist, cumulative: totalDistance });
           totalDistance += dist;
         }
-
         let traveled = 0;
         const speed = totalDistance / 800;
-
         const animate = () => {
           traveled = (traveled + speed) % totalDistance;
           const seg = segments.find((s, idx) => traveled >= s.cumulative && (idx === segments.length - 1 || traveled < segments[idx + 1].cumulative));
-
           if (seg) {
             const percent = (traveled - seg.cumulative) / seg.dist;
             const lat = seg.start[0] + (seg.end[0] - seg.start[0]) * percent;
             const lng = seg.start[1] + (seg.end[1] - seg.start[1]) * percent;
-            
             const p1 = mapRef.current.latLngToContainerPoint(seg.start);
             const p2 = mapRef.current.latLngToContainerPoint(seg.end);
             const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI) + 90;
-
             const totalPercent = traveled / totalDistance;
             let opacity = 1;
             if (totalPercent < 0.05) opacity = totalPercent / 0.05;
             if (totalPercent > 0.95) opacity = (1 - totalPercent) / 0.05;
-
             arrowMarker.setLatLng([lat, lng]);
             const el = arrowMarker.getElement();
             if (el) {
                 const wrapper = el.querySelector('.arrow-wrapper');
-                if (wrapper) {
-                    wrapper.style.opacity = opacity;
-                    wrapper.style.transform = `rotate(${angle}deg)`;
-                }
+                if (wrapper) { wrapper.style.opacity = opacity; wrapper.style.transform = `rotate(${angle}deg)`; }
             }
           }
           animationIds.push(requestAnimationFrame(animate));
@@ -151,19 +139,52 @@ function App() {
     return () => animationIds.forEach(id => cancelAnimationFrame(id));
   }, [groupedStops]);
 
-  const handlePhaseChange = (val) => {
-    const phaseNum = val.replace(/[^0-9]/g, '');
-    if (phaseNum === '' || parseInt(phaseNum) < 1) {
-        setNewStop({ ...newStop, phase: '' });
-        return;
-    }
-    const existingPhase = stops.find(s => s.phase === phaseNum);
-    if (existingPhase) {
-        setNewStop({ ...newStop, phase: phaseNum, color: existingPhase.color });
-    } else {
-        const randomColor = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
-        setNewStop({ ...newStop, phase: phaseNum, color: randomColor });
-    }
+  // --- EXCEL IMPORT/EXPORT LOGIC ---
+  const exportToExcel = () => {
+    const data = stops.map(s => ({
+      'Stop Name': s.name,
+      'Phase Number': s.phase,
+      'Start Date': s.startDate,
+      'End Date': s.endDate
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Roadshow Plan");
+    XLSX.writeFile(wb, "roadshow_plan.xlsx");
+  };
+
+  const importFromExcel = (e) => {
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      const bstr = evt.target.result;
+      const wb = XLSX.read(bstr, { type: 'binary' });
+      const wsname = wb.SheetNames[0];
+      const ws = wb.Sheets[wsname];
+      const data = XLSX.utils.sheet_to_json(ws);
+      
+      for (const row of data) {
+        const name = row['Stop Name'];
+        const phase = row['Phase Number']?.toString();
+        const start = row['Start Date'];
+        const end = row['End Date'];
+        
+        if (name && phase) {
+          const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${name}`);
+          const geoData = await resp.json();
+          if (geoData[0]) {
+            const coords = { lat: parseFloat(geoData[0].lat), lng: parseFloat(geoData[0].lon) };
+            const existingPhase = stops.find(s => s.phase === phase);
+            const color = existingPhase ? existingPhase.color : '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+            await set(push(ref(db, 'stops')), { 
+              name, phase, color, startDate: start, endDate: end, ...coords, order: stops.length 
+            });
+          }
+        }
+      }
+      alert("导入完成！");
+    };
+    reader.readAsBinaryString(file);
   };
 
   const moveStop = async (index, direction) => {
@@ -172,42 +193,12 @@ function App() {
     if (target < 0 || target >= newStops.length) return;
     const currentStop = newStops[index];
     const neighborStop = newStops[target];
-    if (direction === 1 && new Date(currentStop.startDate) < new Date(neighborStop.startDate)) return alert("无法向下移动：日期较早。");
-    if (direction === -1 && new Date(currentStop.startDate) > new Date(neighborStop.startDate)) return alert("无法向上移动：日期较晚。");
+    if (direction === 1 && new Date(currentStop.startDate) < new Date(neighborStop.startDate)) return alert("无法下移：违反日期顺序");
+    if (direction === -1 && new Date(currentStop.startDate) > new Date(neighborStop.startDate)) return alert("无法上移：违反日期顺序");
     [newStops[index], newStops[target]] = [newStops[target], newStops[index]];
     const updates = {};
     newStops.forEach((s, i) => { updates[`stops/${s.id}/order`] = i; });
     await update(ref(db), updates);
-  };
-
-  const handleActionDelete = (id) => { if(window.confirm("确定删除？")) remove(ref(db, `stops/${id}`)); };
-
-  const handleExport = async () => {
-    if (exportRef.current) {
-        const dataUrl = await htmlToImage.toPng(exportRef.current, { backgroundColor: '#f8fafc' });
-        const link = document.createElement('a');
-        link.download = 'route-plan.png';
-        link.href = dataUrl;
-        link.click();
-    }
-  };
-
-  const handleSave = async () => {
-    if (!newStop.name || !newStop.phase) return;
-    const dateTaken = stops.some(s => s.id !== editingId && s.startDate === newStop.startDate);
-    if (dateTaken) return alert(`日期 ${newStop.startDate} 已被占用！`);
-    const colorConflict = stops.some(s => s.phase !== newStop.phase && s.color === newStop.color);
-    if (colorConflict) return alert("该颜色已被其他阶段使用！");
-    const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${newStop.name}`);
-    const data = await resp.json();
-    if (data[0]) {
-      const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
-      const targetRef = editingId ? ref(db, `stops/${editingId}`) : push(ref(db, 'stops'));
-      await set(targetRef, { ...newStop, ...coords, order: editingId ? newStop.order : stops.length });
-      setIsEditing(false);
-      setEditingId(null);
-      setNewStop(initialStopState);
-    }
   };
 
   return (
@@ -219,17 +210,24 @@ function App() {
       <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-slate-100 z-10">
         <div className="flex items-center gap-4">
           <div className="bg-blue-600 p-2 rounded-xl text-white shadow-md"><MapPin size={20} /></div>
-          <h1 className="text-lg font-bold tracking-tight">巡展路线规划助手</h1>
+          <h1 className="text-lg font-bold tracking-tight">巡展规划助手</h1>
         </div>
-        <div className="flex items-center gap-3">
-            <button onClick={() => {navigator.clipboard.writeText(window.location.href); setShareStatus(true); setTimeout(()=>setShareStatus(false), 2000)}} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 flex items-center gap-2 font-bold text-sm">
-                {shareStatus ? <Check size={18} className="text-green-600"/> : <Share2 size={18} />}
-                <span>{shareStatus ? '已复制' : '分享'}</span>
+        <div className="flex items-center gap-2">
+            <button onClick={() => fileInputRef.current.click()} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all flex items-center gap-2 font-bold text-xs">
+                <FileUp size={16} /><span>导入Excel</span>
+                <input type="file" ref={fileInputRef} hidden onChange={importFromExcel} accept=".xlsx, .xls, .csv" />
             </button>
-            <button onClick={handleExport} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 flex items-center gap-2 font-bold text-sm">
-                <Download size={18} /><span>导出图片</span>
+            <button onClick={exportToExcel} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all flex items-center gap-2 font-bold text-xs">
+                <FileDown size={16} /><span>导出Excel</span>
             </button>
-            <button onClick={() => {setIsEditing(true); setEditingId(null); setNewStop(initialStopState); setPhaseMode('select');}} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-slate-800 shadow-lg transition-all">
+            <button onClick={async () => {
+                const dataUrl = await htmlToImage.toPng(exportRef.current, { backgroundColor: '#f8fafc' });
+                const link = document.createElement('a');
+                link.download = 'map.png'; link.href = dataUrl; link.click();
+            }} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all flex items-center gap-2 font-bold text-xs">
+                <Download size={16} /><span>导出图片</span>
+            </button>
+            <button onClick={() => {setIsEditing(true); setEditingId(null); setNewStop(initialStopState);}} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-slate-800 shadow-lg ml-2">
                 <Plus size={18} /><span>新增站点</span>
             </button>
         </div>
@@ -237,7 +235,7 @@ function App() {
       <main className="flex flex-1 overflow-hidden p-6 gap-6">
         <div className="w-[380px] bg-white rounded-[32px] shadow-xl border border-slate-100 flex flex-col overflow-hidden">
           {isEditing ? (
-            <div className="p-8 flex flex-col h-full bg-white animate-in slide-in-from-right-4 duration-200">
+            <div className="p-8 flex flex-col h-full bg-white">
                <div className="flex justify-between items-center mb-8">
                  <h2 className="text-xl font-bold">{editingId ? '编辑' : '新增'}</h2>
                  <button onClick={() => setIsEditing(false)} className="p-1 hover:bg-slate-100 rounded-full"><X size={20} /></button>
@@ -245,28 +243,27 @@ function App() {
                <div className="space-y-5">
                  <input className="w-full p-4 bg-slate-50 rounded-xl font-bold border-2 border-transparent focus:border-blue-500 outline-none" placeholder="城市" value={newStop.name} onChange={e => setNewStop({...newStop, name: e.target.value})} />
                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                        <label className="text-[10px] font-bold text-slate-400 mb-1 block uppercase">阶段</label>
-                        {phaseMode === 'select' ? (
-                            <select className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none appearance-none" value={newStop.phase} onChange={e => {if(e.target.value==='custom'){setPhaseMode('custom'); setNewStop({...newStop, phase:''})} else handlePhaseChange(e.target.value)}}>
-                                {[...Array(12)].map((_, i) => <option key={i+1} value={i+1}>{i+1}</option>)}
-                                <option value="custom">Custom...</option>
-                            </select>
-                        ) : (
-                            <div className="relative">
-                                <input type="text" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" placeholder="Phase #" value={newStop.phase} onChange={e => handlePhaseChange(e.target.value)} />
-                                <button onClick={() => setPhaseMode('select')} className="absolute right-2 top-3 p-1 text-slate-300 hover:text-slate-500"><X size={14}/></button>
-                            </div>
-                        )}
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-slate-400 mb-1 block uppercase">主题色</label>
-                        <input type="color" className="w-full h-14 p-1 bg-slate-50 rounded-xl cursor-pointer" value={newStop.color} onChange={e => setNewStop({...newStop, color: e.target.value})} />
-                    </div>
+                    <select className="p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.phase} onChange={e => {
+                        const phase = e.target.value;
+                        const exist = stops.find(s => s.phase === phase);
+                        setNewStop({...newStop, phase, color: exist ? exist.color : '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')});
+                    }}>
+                        {[...Array(12)].map((_, i) => <option key={i+1} value={i+1}>{i+1}</option>)}
+                    </select>
+                    <input type="color" className="w-full h-14 p-1 bg-slate-50 rounded-xl cursor-pointer" value={newStop.color} onChange={e => setNewStop({...newStop, color: e.target.value})} />
                  </div>
                  <input type="date" className="w-full p-4 bg-slate-50 rounded-xl font-bold outline-none" value={newStop.startDate} onChange={e => setNewStop({...newStop, startDate: e.target.value, endDate: e.target.value})} />
                </div>
-               <button onClick={handleSave} className="mt-auto w-full py-4 bg-blue-600 text-white rounded-xl font-bold">保存</button>
+               <button onClick={async () => {
+                 const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${newStop.name}`);
+                 const data = await resp.json();
+                 if (data[0]) {
+                   const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+                   const targetRef = editingId ? ref(db, `stops/${editingId}`) : push(ref(db, 'stops'));
+                   await set(targetRef, { ...newStop, ...coords, order: editingId ? newStop.order : stops.length });
+                   setIsEditing(false); setNewStop(initialStopState);
+                 }
+               }} className="mt-auto w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg">保存</button>
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto p-5 space-y-6">
@@ -280,15 +277,12 @@ function App() {
                       <div key={stop.id} className="p-4 bg-white rounded-xl border border-slate-100 flex items-center justify-between group hover:border-blue-100 transition-all shadow-sm">
                         <div className="flex items-center gap-3 cursor-pointer flex-1" onClick={() => {setNewStop(stop); setEditingId(stop.id); setIsEditing(true);}}>
                           <div className="w-2 h-2 rounded-full" style={{ backgroundColor: stop.color }} />
-                          <div>
-                            <p className="font-bold text-slate-700 text-sm">{stop.name}</p>
-                            <p className="text-[9px] text-slate-400 font-bold uppercase">{stop.startDate}</p>
-                          </div>
+                          <div><p className="font-bold text-slate-700 text-sm">{stop.name}</p><p className="text-[9px] text-slate-400 font-bold">{stop.startDate}</p></div>
                         </div>
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100">
                             <button onClick={() => moveStop(stops.indexOf(stop), -1)} className="p-1 hover:bg-slate-100 rounded text-slate-400"><ChevronUp size={14} /></button>
                             <button onClick={() => moveStop(stops.indexOf(stop), 1)} className="p-1 hover:bg-slate-100 rounded text-slate-400"><ChevronDown size={14} /></button>
-                            <button onClick={() => handleActionDelete(stop.id)} className="p-1.5 hover:bg-red-50 text-red-400 rounded"><Trash2 size={14} /></button>
+                            <button onClick={() => remove(ref(db, `stops/${stop.id}`))} className="p-1.5 hover:bg-red-50 text-red-400 rounded"><Trash2 size={14} /></button>
                         </div>
                       </div>
                     ))}
@@ -298,9 +292,7 @@ function App() {
             </div>
           )}
         </div>
-        <div className="flex-1 bg-white rounded-[40px] shadow-2xl border-[8px] border-white overflow-hidden relative">
-          <div ref={mapContainerRef} className="absolute inset-0" />
-        </div>
+        <div className="flex-1 bg-white rounded-[40px] shadow-2xl border-[8px] border-white overflow-hidden relative"><div ref={mapContainerRef} className="absolute inset-0" /></div>
       </main>
     </div>
   );
